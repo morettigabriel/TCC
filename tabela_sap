@@ -1,0 +1,179 @@
+# =========================
+# 1. Imports
+# =========================
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+
+# =========================
+# 2. Ler a tabela SAP
+# =========================
+df_sap = spark.table("workspace.tcc.base_sap_10_2025")
+
+# =========================
+# 3. Criar lista distinta de materiais
+# =========================
+df_materiais = (
+    df_sap
+    .select("material")
+    .distinct()
+)
+
+# =========================
+# 4. Criar ranking 
+# =========================
+window_spec = Window.orderBy("material")
+
+df_materiais_rank = (
+    df_materiais
+    .withColumn("ordem_material", F.row_number().over(window_spec))
+)
+
+# =========================
+# 5. Criar identificador anonimizado 
+# =========================
+df_materiais_anon = (
+    df_materiais_rank
+    .withColumn(
+        "material_anonimo",
+        F.concat(F.lit("X"), F.col("ordem_material"))
+    )
+    .select("material", "material_anonimo")
+)
+
+# Salvar a tabela de DE-PARA 
+df_materiais_anon.write.mode("overwrite").saveAsTable(
+    "workspace.tcc.depara_material_sap"
+)
+
+# =========================
+# 6. Aplicar anonimização na base completa
+# =========================
+df_sap_anon = (
+    df_sap
+    .join(
+        df_materiais_anon,
+        on="material",
+        how="inner"
+    )
+)
+
+# =========================
+# 6.1 Anonimizar classe_de_custo
+# =========================
+df_sap_anon = (
+    df_sap_anon
+    .withColumn(
+        "classe_de_custo_anon",
+        F.when(F.col("classe_de_custo") == 4120102001, 1111)
+         .when(F.col("classe_de_custo") == 4120102002, 2222)
+         .otherwise(F.col("classe_de_custo"))
+    )
+)
+
+from pyspark.sql import functions as F
+
+df_sap_anon = (
+    df_sap_anon
+    .withColumn(
+        "unidade",
+        F.when(F.col("empresa") == 1000, F.lit("Alfa"))
+         .when(F.col("empresa") == 1100, F.lit("Alfa"))
+         .when(F.col("empresa") == 1500, F.lit("Beta"))
+         .when(F.col("empresa") == 1550, F.lit("Beta"))
+         .when(F.col("empresa") == 1900, F.lit("Gama"))
+         .when(F.col("empresa") == 2000, F.lit("Delta"))
+         .when(F.col("empresa") == 2100, F.lit("Delta"))
+         .when(F.col("empresa") == 2200, F.lit("Delta"))
+         .when(F.col("empresa") == 2700, F.lit("Ômega"))
+         .when(F.col("empresa") == 2800, F.lit("Gama"))
+         .when(F.col("empresa") == 2900, F.lit("Gama"))
+         .when(F.col("empresa") == 3000, F.lit(None))   # null explícito
+         .when(F.col("empresa") == 3200, F.lit("Delta"))
+         .otherwise(F.lit(None))
+    )
+)
+
+# =========================
+# 7. Remover colunas confidenciais
+# =========================
+df_sap_anon = df_sap_anon.drop(
+    "material",
+    "classe_de_custo",
+    "centro_custo",
+    "denominacao",
+    "no_documento",
+    "item",
+    "linha_de_lancamento",
+    "no_docde_referencia",
+    "nome_do_usuario",
+    "objeto",
+    "operacao_ref",
+    "texto_do_pedido",
+    "tipo_de_conta_de_contrapartida",
+    "tipo_de_documento",
+    "documento_de_compras",
+    "periodo",
+    "exercicio_referencia",
+    "denominacao_objeto",
+    "denomclasse_custo",
+    "texto_breve_material",
+    "conta_lnctocontrap",
+    "descrconta_de_contrapartida",
+    "empresa", 
+    "import_date",
+    "data_do_documento",
+    "data_de_entrada"
+)
+
+# =========================
+# 8. Reordenar colunas
+# =========================
+ordem_principal = [
+    "unidade",
+    "material_anonimo",
+    "classe_de_custo_anon",
+    "valormr",
+    "qtdtotal_entrada",
+    "data_de_lancamento"
+]
+
+ordem_principal_existentes = [c for c in ordem_principal if c in df_sap_anon.columns]
+
+outras_colunas = [
+    c for c in df_sap_anon.columns
+    if c not in ordem_principal_existentes
+]
+
+df_sap_anon = df_sap_anon.select(ordem_principal_existentes + outras_colunas)
+
+df_sap_anon = (
+df_sap_anon
+.withColumnRenamed("valormr","valor")
+.withColumnRenamed("qtdtotal_entrada","quantidade")
+.withColumnRenamed("material_anonimo","material")
+.withColumnRenamed("classe_de_custo_anon","conta")
+.withColumnRenamed("unidade","hub")
+)
+
+
+df_sap_anon = (
+    df_sap_anon
+    .withColumn("valor", F.col("valor") * -1)
+    .withColumn("quantidade", F.col("quantidade") * -1)
+)
+
+df_sap_anon = df_sap_anon.withColumn("data_de_lancamento", F.date_format(F.to_date("data_de_lancamento"), "yyyy-MM"))
+
+df_sap_anon = df_sap_anon.withColumn("fonte", F.lit("SAP"))
+
+# =========================
+# 9. Salvar tabela final anonimizada
+# =========================
+df_sap_anon.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(
+    "workspace.tcc.sap_anon"
+)
+
+# =========================
+# 10. Conferência
+# =========================
+display(df_sap_anon)
