@@ -1,0 +1,181 @@
+# =========================
+# 1. Imports
+# =========================
+from pyspark.sql import functions as F
+
+# =========================
+# 2. Ler tabelas
+# =========================
+df_his = spark.table("workspace.tcc.base_mov_10_2025")
+df_depara_material = spark.table("workspace.tcc.depara_material_sap")
+
+# =========================
+# 3. Aplicar de-para de materiais
+# cd_material_sap -> material_anonimo
+# =========================
+df_his_anon = df_his.join(
+    df_depara_material,
+    F.col("cd_material_sap") == df_depara_material.material,
+    how="left",
+).drop(
+    df_depara_material.material
+)  # Drop the 'material' column from the join
+
+# =========================
+# 4. Anonimizar classe de custo
+# =========================
+df_his_anon = df_his_anon.withColumn(
+    "classe_de_custo_anon",
+    F.when(F.col("conta_do_razao_2") == 4120102001, 1111)
+    .when(F.col("conta_do_razao_2") == 4120102002, 2222)
+    .otherwise(F.lit("outras_contas")),
+)
+
+df_his_anon = df_his_anon.withColumn(
+    "unidade",
+    F.when(F.col("empresa") == 1000, F.lit("Alfa"))
+    .when(F.col("empresa") == 1100, F.lit("Alfa"))
+    .when(F.col("empresa") == 1500, F.lit("Beta"))
+    .when(F.col("empresa") == 1550, F.lit("Beta"))
+    .when(F.col("empresa") == 1900, F.lit("Gama"))
+    .when(F.col("empresa") == 2000, F.lit("Delta"))
+    .when(F.col("empresa") == 2100, F.lit("Delta"))
+    .when(F.col("empresa") == 2200, F.lit("Delta"))
+    .when(F.col("empresa") == 2700, F.lit("Ômega"))
+    .when(F.col("empresa") == 2800, F.lit("Gama"))
+    .when(F.col("empresa") == 2900, F.lit("Gama"))
+    .when(F.col("empresa") == 3000, F.lit(None))  # null explícito
+    .when(F.col("empresa") == 3200, F.lit("Delta"))
+    .otherwise(F.lit(None)),
+)
+
+# =========================
+# 5. Remover colunas confidenciais
+# =========================
+df_his_anon = df_his_anon.drop(
+    "cd_material_sap",
+    "conta_do_razao_2",
+    "cd_acao",
+    "cd_centro_custo",
+    "cd_centro_custo_sap",
+    "cd_conta_contabil_sap",
+    "cd_convenio",
+    "cd_estabelecimento",
+    "cd_local_estoque",
+    "cd_material_conta",
+    "cd_material_estoque",
+    "cd_operacao_estoque",
+    "cd_setor_atendimento",
+    "cd_uni_pro",
+    "cd_unidade_med_mov",
+    "cd_unidade_medida_estoque",
+    "classe_de_avaliacao",
+    "conta_do_razao",
+    "depara_sorocaba",
+    "depara_unidade",
+    "ds_acao",
+    "ds_centro_custo",
+    "ds_centro_custo_sap",
+    "ds_classe",
+    "ds_conta_contabil_sap",
+    "ds_convenio",
+    "ds_grup_conta",
+    "ds_item",
+    "ds_local_estoque",
+    "ds_material_conta",
+    "ds_operacao_estoque",
+    "ds_setor_atendimento",
+    "ds_subgrupo",
+    "ds_unidade_uni_pro",
+    "dt_atualizacao",
+    "dt_movimento_estoque",
+    "dt_processo",
+    "empresa",
+    "estabelecimento",
+    "fator_conversao_sap",
+    "fator_uni_pro",
+    "hub",
+    "ie_consumo",
+    "ie_entrada_saida",
+    "import_date",
+    "nr_atendimento",
+    "nr_documento",
+    "nr_movimento_estoque",
+    "nr_prescricao",
+    "nr_seq_fat_conta",
+    "outros_fator",
+    "qt_estoque",
+    "qt_estoque_ajustado",
+    "qt_item",
+    "qt_item_aj",
+    "sap",
+    "sigla_hub",
+    "sistema",
+    "sorocaba_fator",
+    "unidade_medida_base_sap",
+    "unidade_uni_pro",
+    "vl_custo_mov",
+)
+
+# =========================
+# 6. Reordenar colunas
+# =========================
+# cols = ["material_anonimo", "classe_de_custo_anon"] + [
+#     c
+#     for c in df_his_anon.columns
+#     if c not in ["material_anonimo", "classe_de_custo_anon"]
+# ]
+# df_his_anon = df_his_anon.select(cols)
+
+ordem_principal = [
+    "unidade",
+    "material_anonimo",
+    "classe_de_custo_anon",
+    "vl_custo_mov_aj",
+    "qt_conversao_sap",
+    "dt_mesano_referencia"
+]
+
+# garante que só entram colunas que realmente existem no DataFrame
+ordem_principal_existentes = [c for c in ordem_principal if c in df_his_anon.columns]
+
+# adiciona as demais colunas ao final
+outras_colunas = [
+    c for c in df_his_anon.columns
+    if c not in ordem_principal_existentes
+]
+
+df_his_anon = df_his_anon.select(ordem_principal_existentes + outras_colunas)
+
+df_his_anon = (
+df_his_anon
+.withColumnRenamed("vl_custo_mov_aj","valor")
+.withColumnRenamed("qt_conversao_sap","quantidade")
+.withColumnRenamed("material_anonimo","material")
+.withColumnRenamed("classe_de_custo_anon","conta")
+.withColumnRenamed("dt_mesano_referencia","data_de_lancamento")
+.withColumnRenamed("unidade","hub")
+)
+
+
+df_his_anon = (
+    df_his_anon
+    .withColumn("quantidade", F.round(F.col("quantidade"), 2))
+    .withColumn("valor", F.round(F.col("valor"), 2))
+)
+
+df_his_anon = df_his_anon.withColumn("data_de_lancamento", F.date_format(F.to_date("data_de_lancamento"), "yyyy-MM"))
+
+df_his_anon = df_his_anon.withColumn("fonte", F.lit("HIS"))
+
+# =========================
+# 7. Salvar tabela HIS anonimizada
+# =========================
+df_his_anon.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(
+    "workspace.tcc.his_anon"
+)
+
+# =========================
+# 8. Conferência
+# =========================
+display(df_his_anon)
